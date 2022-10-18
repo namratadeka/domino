@@ -1,0 +1,3 @@
+[submodule "meerkat"]
+	path = meerkat
+	url = git@github.com:robustness-gym/meerkat.git

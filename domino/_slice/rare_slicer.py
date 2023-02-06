@@ -10,6 +10,7 @@ import sklearn.cluster as cluster
 from scipy import linalg
 from scipy.special import logsumexp
 from sklearn.decomposition import PCA
+from scipy.spatial import distance_matrix
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.mixture import GaussianMixture
 from sklearn.mixture._base import _check_X, check_random_state
@@ -27,13 +28,12 @@ from tqdm.auto import tqdm
 from domino.utils import convert_to_numpy, unpack_args
 
 from .abstract import Slicer
-from .contrastive import ContrastiveEmbeddings
 
 
-class MixtureSlicer(Slicer):
+class RareMixtureSlicer(Slicer):
 
     r"""
-    Slice Discovery based on the Domino Mixture Model.
+    Slice Discovery based on the Rare Mixture Model.
 
     Discover slices by jointly modeling a mixture of input embeddings (e.g. activations
     from a trained model), class labels, and model predictions. This encourages slices
@@ -48,18 +48,18 @@ class MixtureSlicer(Slicer):
 
     .. code-block:: python
 
-        from domino import MixtureSlicer
+        from domino import RareMixtureSlicer
         dp = ...  # Load dataset into a Meerkat DataPanel
 
         # split dataset
         valid_dp = dp.lz[dp["split"] == "valid"]
         test_dp = dp.lz[dp["split"] == "test"]
 
-        domino = MixtureSlicer()
-        domino.fit(
+        RareMM = RareMixtureSlicer()
+        RareMM.fit(
             data=valid_dp, embeddings="emb", targets="target", pred_probs="pred_probs"
         )
-        dp["domino_slices"] = domino.predict(
+        dp["RareMM_slices"] = RareMM.predict(
             data=test_dp, embeddings="emb", targets="target", pred_probs="pred_probs"
         )
 
@@ -70,11 +70,11 @@ class MixtureSlicer(Slicer):
         covariance_type (str, optional): The type of covariance parameter
             :math:`\mathbf{\Sigma}` to use. Same as in sklearn.mixture.GaussianMixture.
             Defaults to "diag", which is recommended.
-        n_emb_components (Union[int, None], optional): The number of PCA components
+        n_pca_components (Union[int, None], optional): The number of PCA components
             to use. If ``None``, then no PCA is performed. Defaults to 128.
         n_mixture_components (int, optional): The number of clusters in the mixture
             model, :math:`\bar{k}`. This differs from ``n_slices`` in that the
-            ``MixtureSlicer`` only returns the top ``n_slices`` with the highest error rate
+            ``RareMixtureSlicer`` only returns the top ``n_slices`` with the highest error rate
             of the ``n_mixture_components``. Defaults to 25.
         y_log_likelihood_weight (float, optional): The weight :math:`\gamma` applied to
             the :math:`P(Y=y_{i} | S=s)` term in the log likelihood during the E-step.
@@ -107,23 +107,23 @@ class MixtureSlicer(Slicer):
       :math:`S` is sampled from a categorical
       distribution :math:`S \sim Cat(\mathbf{p}_S)` with parameter :math:`\mathbf{p}_S
       \in\{\mathbf{p} \in \mathbb{R}_+^{\bar{k}} : \sum_{i = 1}^{\bar{k}} p_i = 1\}`
-      (see ``MixtureSlicer.mm.weights_``).
+      (see ``RareMixtureSlicer.mm.weights_``).
     * Given the slice :math:`S'`, the embeddings are normally distributed
       :math:`Z | S \sim \mathcal{N}(\mathbf{\mu}, \mathbf{\Sigma}`)  with parameters
-      mean :math:`\mathbf{\mu} \in \mathbb{R}^d` (see ``MixtureSlicer.mm.means_``) and
+      mean :math:`\mathbf{\mu} \in \mathbb{R}^d` (see ``RareMixtureSlicer.mm.means_``) and
       :math:`\mathbf{\Sigma} \in \mathbb{S}^{d}_{++}`
-      (see ``MixtureSlicer.mm.covariances_``;
+      (see ``RareMixtureSlicer.mm.covariances_``;
       normally this parameter is constrained to the set of symmetric positive definite
       :math:`d \\times d` matrices, however the argument ``covariance_type`` allows for
       other constraints).
     * Given the slice, the labels vary as a categorical
       :math:`Y |S \sim Cat(\mathbf{p})` with parameter :math:`\mathbf{p}
       \in \{\mathbf{p} \in \mathbb{R}^c_+ : \sum_{i = 1}^c p_i = 1\}` (see
-      ``MixtureSlicer.mm.y_probs``).
+      ``RareMixtureSlicer.mm.y_probs``).
     * Given the slice, the model predictions also vary as a categorical
       :math:`\hat{Y} | S \sim Cat(\mathbf{\hat{p}})` with parameter
       :math:`\mathbf{\hat{p}} \in \{\mathbf{\hat{p}} \in \mathbb{R}^c_+ :
-      \sum_{i = 1}^c \hat{p}_i = 1\}` (see ``MixtureSlicer.mm.y_hat_probs``).
+      \sum_{i = 1}^c \hat{p}_i = 1\}` (see ``RareMixtureSlicer.mm.y_hat_probs``).
 
     The mixture model is, thus, parameterized by :math:`\phi = [\mathbf{p}_S, \mu,
     \Sigma, \mathbf{p}, \mathbf{\hat{p}}]` corresponding to the attributes
@@ -196,40 +196,49 @@ class MixtureSlicer(Slicer):
         self,
         n_slices: int = 5,
         covariance_type: str = "diag",
-        embedder: str = "pca",
-        n_emb_components: Union[int, None] = 128,
+        n_pca_components: Union[int, None] = 128,
         n_mixture_components: int = 25,
         y_log_likelihood_weight: float = 1,
         y_hat_log_likelihood_weight: float = 1,
+        error_weight: float = 1,
         max_iter: int = 100,
         init_params: str = "confusion",
         confusion_noise: float = 1e-3,
         random_state: int = None,
+        weight_by_error: bool = False,
+        n_error_classes: int = 2,
         pbar: bool = True,
     ):
         super().__init__(n_slices=n_slices)
 
         self.config.covariance_type = covariance_type
-        self.config.embedder = embedder
-        self.config.n_emb_components = n_emb_components
+        self.config.n_pca_components = n_pca_components
         self.config.n_mixture_components = n_mixture_components
         self.config.init_params = init_params
         self.config.confusion_noise = confusion_noise
         self.config.y_log_likelihood_weight = y_log_likelihood_weight
         self.config.y_hat_log_likelihood_weight = y_hat_log_likelihood_weight
+        self.config.error_weight = error_weight
+        self.config.weight_by_error = weight_by_error
         self.config.max_iter = max_iter
 
-        self.pca = PCA(n_components=self.config.n_emb_components)
+        if self.config.n_pca_components is None:
+            self.pca = None
+        else:
+            self.pca = PCA(n_components=self.config.n_pca_components)
 
-        self.mm = DominoMixture(
+        self.mm = RareMixture(
             n_components=self.config.n_mixture_components,
             y_log_likelihood_weight=self.config.y_log_likelihood_weight,
             y_hat_log_likelihood_weight=self.config.y_hat_log_likelihood_weight,
+            error_weight=self.config.error_weight,
             covariance_type=self.config.covariance_type,
             init_params=self.config.init_params,
             max_iter=self.config.max_iter,
             confusion_noise=self.config.confusion_noise,
             random_state=random_state,
+            weight_by_error=weight_by_error,
+            n_error_classes=n_error_classes,
             pbar=pbar,
         )
 
@@ -240,7 +249,7 @@ class MixtureSlicer(Slicer):
         targets: Union[str, np.ndarray] = "target",
         pred_probs: Union[str, np.ndarray] = "pred_probs",
         losses: Union[str, np.ndarray] = None,
-    ) -> MixtureSlicer:
+    ) -> RareMixtureSlicer:
         """
         Fit the mixture model to data.
 
@@ -263,7 +272,7 @@ class MixtureSlicer(Slicer):
                 or (n_samples,) in the binary case. Defaults to "pred_probs".
 
         Returns:
-            MixtureSlicer: Returns a fit instance of MixtureSlicer.
+            RareMixtureSlicer: Returns a fit instance of RareMixtureSlicer.
         """
         embeddings, targets, pred_probs = unpack_args(
             data, embeddings, targets, pred_probs
@@ -272,20 +281,9 @@ class MixtureSlicer(Slicer):
             embeddings, targets, pred_probs
         )
 
-        if self.config.embedder == "pca":
+        if self.pca is not None:
             self.pca.fit(X=embeddings)
             embeddings = self.pca.transform(X=embeddings)
-        elif self.config.embedder == "contrastive":
-            self.pca.fit(X=embeddings)
-            embeddings = self.pca.transform(X=embeddings)
-            self.encoder = ContrastiveEmbeddings(input_dim=embeddings.shape[1], 
-                                                 enc_dim=self.config.n_emb_components, 
-                                                 batch_size=16,
-                                                 cont_weight=1,
-                                                 recon_weight=10,
-                                                 orth_weight=0)
-            self.encoder.fit(x=embeddings, y=targets, y_hat=pred_probs)
-            embeddings = self.encoder.transform(x=embeddings)
         
         self.err_entropy = self.mm.fit(X=embeddings, y=targets, y_hat=pred_probs)
 
@@ -307,7 +305,7 @@ class MixtureSlicer(Slicer):
 
 
         .. caution::
-            Must call ``MixtureSlicer.fit`` prior to calling ``MixtureSlicer.predict``.
+            Must call ``RareMixtureSlicer.fit`` prior to calling ``RareMixtureSlicer.predict``.
 
 
         Args:
@@ -355,8 +353,8 @@ class MixtureSlicer(Slicer):
         Get probabilistic slice membership for data using a fit mixture model.
 
         .. caution::
-            Must call ``MixtureSlicer.fit`` prior to calling
-            ``MixtureSlicer.predict_proba``.
+            Must call ``RareMixtureSlicer.fit`` prior to calling
+            ``RareMixtureSlicer.predict_proba``.
 
 
         Args:
@@ -389,33 +387,62 @@ class MixtureSlicer(Slicer):
             embeddings, targets, pred_probs
         )
 
-        if self.config.embedder == "pca":
+        if self.pca is not None:
             embeddings = self.pca.transform(X=embeddings)
-        elif self.config.embedder == "contrastive":
-            embeddings = self.pca.transform(X=embeddings)
-            embeddings = self.encoder.transform(x=embeddings)
 
         clusters = self.mm.predict_proba(embeddings, y=targets, y_hat=pred_probs)
 
         return clusters[:, self.slice_cluster_indices]
 
 
-class DominoMixture(GaussianMixture):
+class RareMixture(GaussianMixture):
     @wraps(GaussianMixture.__init__)
     def __init__(
         self,
         *args,
         y_log_likelihood_weight: float = 1,
         y_hat_log_likelihood_weight: float = 1,
+        error_weight: float = 1,
         confusion_noise: float = 1e-3,
         pbar: bool = True,
+        weight_by_error: bool = False,
+        n_error_classes: int = 2,
         **kwargs,
     ):
         self.y_log_likelihood_weight = y_log_likelihood_weight
         self.y_hat_log_likelihood_weight = y_hat_log_likelihood_weight
+        self.error_weight = error_weight
         self.confusion_noise = confusion_noise
         self.pbar = pbar
+        self.weight_by_error = weight_by_error
+        self.n_error_classes = n_error_classes
         super().__init__(*args, **kwargs)
+    
+    def kcenter_approx(
+        self,
+        embeddings: np.ndarray,
+        n_components: int,
+        **_ignored
+    ):
+        n = embeddings.shape[0]
+        d_mat = distance_matrix(embeddings, embeddings)
+        cluster_centers = [np.random.randint(n)]
+        assignments = np.zeros(n)
+
+        for k in range(n_components-1):
+            h = 0
+            v = None
+            for idx, center in enumerate(cluster_centers):
+                cluster_points = np.where(assignments == idx)[0]
+                farthest_idx = d_mat[center, cluster_points].argmax()
+                farthest_dist = d_mat[center, cluster_points[farthest_idx]]
+                if farthest_dist > h:
+                    h = farthest_dist
+                    v = cluster_points[farthest_idx]
+            cluster_centers.append(v)
+            assignments = d_mat[np.ix_(cluster_centers, np.arange(n))].argmin(axis=0)
+        
+        return assignments
 
     def _initialize_parameters(self, X, y, y_hat, random_state):
         """Initialize the model parameters.
@@ -440,6 +467,11 @@ class DominoMixture(GaussianMixture):
                 .labels_
             )
             resp[np.arange(n_samples), label] = 1
+        elif self.init_params == "kcenter":
+            print("Initializing with k-center clustering.")
+            resp = np.zeros((n_samples, self.n_components))
+            labels = self.kcenter_approx(X, self.n_components)
+            resp[np.arange(n_samples), labels] = 1
         elif self.init_params == "random":
             resp = random_state.rand(n_samples, self.n_components)
             resp /= resp.sum(axis=1)[:, np.newaxis]
@@ -484,11 +516,13 @@ class DominoMixture(GaussianMixture):
         """
         n_samples, _ = X.shape
 
-        weights, means, covariances, y_probs, y_hat_probs = _estimate_parameters(
-            X, y, y_hat, resp, self.reg_covar, self.covariance_type
+        weights, means, covariances, y_probs, y_hat_probs, e_weights = _estimate_parameters(
+            X, y, y_hat, resp, self.reg_covar, self.covariance_type, self.n_error_classes
         )
-        weights /= n_samples
-
+        if self.weight_by_error:
+            weights = e_weights
+        else:
+            weights /= n_samples
         self.weights_ = weights if self.weights_init is None else self.weights_init
         self.means_ = means if self.means_init is None else self.means_init
         self.y_probs, self.y_hat_probs = y_probs, y_hat_probs
@@ -556,7 +590,8 @@ class DominoMixture(GaussianMixture):
                 self._initialize_parameters(X, y, y_hat, random_state)
 
             lower_bound = -np.infty if do_init else self.lower_bound_
-
+            self.log_errors = []
+            self.log_lls = []
             for n_iter in tqdm(
                 range(1, self.max_iter + 1), colour="#f17a4a", disable=not self.pbar
             ):
@@ -567,9 +602,13 @@ class DominoMixture(GaussianMixture):
                     import pdb; pdb.set_trace()
 
                 self._m_step(X, y, y_hat, log_resp)
-                lower_bound = self._compute_lower_bound(log_resp, log_prob_norm)
+                log_error = self._estimate_error(log_resp)
+                lower_bound = self._compute_lower_bound(log_resp, log_prob_norm + log_error * self.error_weight)
                 change = lower_bound - prev_lower_bound
                 self._print_verbose_msg_iter_end(n_iter, change)
+
+                self.log_lls.append(log_prob_norm)
+                self.log_errors.append(log_error)
 
                 if abs(change) < self.tol:
                     self.converged_ = True
@@ -602,9 +641,19 @@ class DominoMixture(GaussianMixture):
         # for any value of max_iter and tol (and any random_state).
         _, log_resp = self._e_step(X, y, y_hat)
 
-        err_entropy = error_entropy(y, y_hat, log_resp)
+        resp = np.exp(log_resp)
+        nk = resp.sum(axis=0) + 10 * np.finfo(resp.dtype).eps  # (n_components, )
+        _, err_entropy = weight_by_entropy(y, y_hat, resp, nk, n_error_classes=4)
 
         return err_entropy
+
+    def _estimate_error(self, log_resp):
+        labels = np.zeros_like(log_resp)
+        labels[np.arange(log_resp.shape[0]), log_resp.argmax(axis=1)] = 1
+        errors = np.abs((self.y_hat_probs - self.y_probs).max(axis=1)) ## change max to mean
+        nk = labels.sum(axis=0) + 10 * np.finfo(labels.dtype).eps
+
+        return (np.log(errors) - np.log(nk)).mean()  ## change to max or top-k
 
     def predict_proba(
         self, X: np.ndarray, y: np.ndarray = None, y_hat: np.ndarray = None
@@ -633,10 +682,14 @@ class DominoMixture(GaussianMixture):
             self.covariances_,
             self.y_probs,
             self.y_hat_probs,
+            e_weights
         ) = _estimate_parameters(
-            X, y, y_hat, resp, self.reg_covar, self.covariance_type
+            X, y, y_hat, resp, self.reg_covar, self.covariance_type, self.n_error_classes
         )
-        self.weights_ /= n_samples
+        if self.weight_by_error:
+            self.weights_ = e_weights
+        else:
+            self.weights_ /= n_samples
         self.precisions_cholesky_ = _compute_precision_cholesky(
             self.covariances_, self.covariance_type
         )
@@ -684,6 +737,7 @@ class DominoMixture(GaussianMixture):
         with np.errstate(under="ignore"):
             # ignore underflow
             log_resp = weighted_log_prob - log_prob_norm[:, np.newaxis]
+
         return log_prob_norm, log_resp
 
     def _estimate_weighted_log_prob(self, X, y=None, y_hat=None):
@@ -768,7 +822,7 @@ class DominoMixture(GaussianMixture):
         )
 
 
-def _estimate_parameters(X, y, y_hat, resp, reg_covar, covariance_type):
+def _estimate_parameters(X, y, y_hat, resp, reg_covar, covariance_type, n_error_classes):
     """Estimate the Gaussian distribution parameters.
 
     Parameters
@@ -800,6 +854,9 @@ def _estimate_parameters(X, y, y_hat, resp, reg_covar, covariance_type):
     covariances : array-like
         The covariance matrix of the current components.
         The shape depends of the covariance_type.
+
+    weights : array-like of shape(n_components,)
+        The error-based weights of the mixture componenets.
     """
     nk = resp.sum(axis=0) + 10 * np.finfo(resp.dtype).eps  # (n_components, )
     means = np.dot(resp.T, X) / nk[:, np.newaxis]
@@ -813,12 +870,14 @@ def _estimate_parameters(X, y, y_hat, resp, reg_covar, covariance_type):
     y_probs = np.dot(resp.T, y) / nk[:, np.newaxis]  # (n_components, n_classes)
     y_hat_probs = np.dot(resp.T, y_hat) / nk[:, np.newaxis]  # (n_components, n_classes)
 
-    return nk, means, covariances, y_probs, y_hat_probs
+    # import pdb; pdb.set_trace()
+    # errors = np.abs((y_probs - y_hat_probs).max(axis=1)) 
+    # weights = np.exp(-errors) / np.exp(-errors).sum() #+ 10 * np.finfo(errors.dtype).eps
+    weights, _ = weight_by_entropy(y, y_hat, resp, nk, n_error_classes=n_error_classes)
 
-def error_entropy(y, y_hat, log_resp, n_error_classes=4):
-    resp = np.exp(log_resp)
-    nk = resp.sum(axis=0) + 10 * np.finfo(resp.dtype).eps  # (n_components, )
+    return nk, means, covariances, y_probs, y_hat_probs, weights
 
+def weight_by_entropy(y, y_hat, resp, nk, n_error_classes):
     true = y[:, 1]
     pred = np.where(y_hat[:, 1] >= 0.5, 1, 0)
     if n_error_classes == 2:
@@ -837,7 +896,6 @@ def error_entropy(y, y_hat, log_resp, n_error_classes=4):
         error_class[np.array(list(set(t1).intersection(set(p1)))), 3] = 1
     error_class_slice = np.dot(resp.T, error_class) / nk[:, np.newaxis] + np.exp(-100)
     slice_entropy = (-error_class_slice * np.log(error_class_slice)).sum(axis=1)
+    weights = np.exp(-slice_entropy) / np.exp(-slice_entropy).sum()
 
-    return slice_entropy
-
-DominoSlicer = MixtureSlicer
+    return weights, slice_entropy

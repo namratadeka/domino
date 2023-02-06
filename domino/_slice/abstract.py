@@ -144,7 +144,7 @@ class Slicer(ABC, BaseEstimator):
         """
         raise NotImplementedError()
 
-    def get_params(self) -> Dict[str, Any]:
+    def get_params(self, **params) -> Dict[str, Any]:
         """
         Get the parameters of this slicer. Returns a dictionary mapping from the names
         of the parameters (as they are defined in the ``__init__``) to their values. 

@@ -1,5 +1,7 @@
 from ._embed import embed, encoders
 from ._slice.abstract import Slicer
+from ._slice.kcenter_old import KCenterSlicer
+from ._slice.rare_slicer import RareMixtureSlicer
 from ._slice.mixture import MixtureSlicer, DominoSlicer
 from ._slice.spotlight import SpotlightSlicer
 from ._slice.barlow import BarlowSlicer
@@ -18,6 +20,7 @@ from .gui import explore
 __all__ = [
     "DominoSlicer",
     "MixtureSlicer",
+    "RareMixtureSlicer",
     "MLPSlicer",
     "SpotlightSlicer",
     "BarlowSlicer",

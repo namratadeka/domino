@@ -4,11 +4,30 @@ from inspect import getcallargs
 from typing import Collection, Mapping
 import pandas as pd
 import torch
+import random
 import numpy as np
 from typing import List
 
 import meerkat as mk
 
+
+def seed_everything(seed=0, harsh=False):
+    """
+    Seeds all important random functions
+    Args:
+        seed (int, optional): seed value. Defaults to 0.
+        harsh (bool, optional): torch backend deterministic. Defaults to False.
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if harsh:
+        torch.backends.cudnn.enabled = False
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
 def unpack_args(data: mk.DataPanel, *args):
     if any(map(lambda x: isinstance(x, str), args)) and data is None:

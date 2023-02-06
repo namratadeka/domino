@@ -153,10 +153,9 @@ class SpotlightSlicer(Slicer):
         if losses is None:
             if (targets is None) or (pred_probs is None):
                 raise ValueError(error_msg)
-            pred_probs = (
-                torch.tensor(pred_probs).to(torch.float32).to(self.config.device)
-            )
-            targets = torch.tensor(targets).to(torch.long).to(self.config.device)
+            pred_probs = torch.tensor(pred_probs).to(torch.float32).to(self.config.device).reshape(-1,1)
+            # targets = torch.tensor(targets).to(torch.long).to(self.config.device).reshape(-1,1)
+            targets = torch.tensor(targets).to(torch.float).to(self.config.device).reshape(-1,1)
             losses = cross_entropy(
                 pred_probs,
                 targets,

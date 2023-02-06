@@ -13,7 +13,7 @@ from sklearn.linear_model import LinearRegression
 import sklearn.metrics as skmetrics
 import pandas as pd
 from scipy.stats import rankdata
-import terra
+# import terra
 import numpy as np
 from domino.eval.metrics import compute_solution_metrics
 import meerkat as mk

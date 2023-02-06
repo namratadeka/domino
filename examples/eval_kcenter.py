@@ -12,7 +12,7 @@ import torch
 import dcbench
 
 from domino.utils import seed_everything
-from domino import embed, DominoSlicer
+from domino import embed, RareMixtureSlicer
 from dcbench import SliceDiscoverySolution
 from domino.eval.metrics import compute_solution_metrics
 
@@ -25,7 +25,7 @@ def get_slices(tasks, slice_type='rare'):
             ids.append(id)
     return ids
 
-def _run_domino(problem, n_slices, n_mixtures, lamda, emb_dp):
+def _run_slicer(problem, n_slices, n_mixtures, lamda, emb_dp):
     print(problem)
     test_dp = mk.merge(problem["test_slices"], problem["test_predictions"], on="id")
     test_dp = mk.merge(problem["base_dataset"], test_dp, on="id")
@@ -48,28 +48,30 @@ def _run_domino(problem, n_slices, n_mixtures, lamda, emb_dp):
     # )
     val_dp = val_dp.merge(emb_dp["id", "clip(image)"], on="id", how="left")
     test_dp = test_dp.merge(emb_dp["id", "clip(image)"], on="id", how="left")
-    # Init. Domino
-    domino_config = {
+    # Init. slicer
+    config = {
+        'init_params': 'kcenter',
         'y_log_likelihood_weight':lamda,
         'y_hat_log_likelihood_weight':lamda,
+        'error_weight': 0,
         'n_mixture_components':n_mixtures,
         'n_slices': n_slices,
-        'embedder': None
+        'weight_by_error': False
     }
-    domino = DominoSlicer(
-        **domino_config
+    slicer = RareMixtureSlicer(
+        **config
     )
     # Fit on val-data
     print('Fitting on validation images:')
-    domino.fit(data=val_dp, embeddings="clip(image)", targets="target", pred_probs="pred")
+    slicer.fit(data=val_dp, embeddings="clip(image)", targets="target", pred_probs="pred")
 
     # Predict on test-data
     print('Predicting slices for test images:')
     result = mk.DataPanel({"id": test_dp["id"]})
-    result["slice_preds"] = domino.predict(
+    result["slice_preds"] = slicer.predict(
         test_dp, embeddings="clip(image)", targets="target", pred_probs="probs"
     )
-    result["slice_probs"] = domino.predict_proba(
+    result["slice_probs"] = slicer.predict_proba(
         test_dp, embeddings="clip(image)", targets="target", pred_probs="probs"
     )
 
@@ -81,22 +83,20 @@ def _run_domino(problem, n_slices, n_mixtures, lamda, emb_dp):
         },
         attributes={
             "problem_id": problem.id,
-            "slicer_class": DominoSlicer,
-            "slicer_config": domino_config,
+            "slicer_class": RareMixtureSlicer,
+            "slicer_config": config,
             "embedding_column": 'clip(image)',
         },
     )
     metrics = compute_solution_metrics(
         solution,
     )
-
-    for i in range(len(metrics)):
-        metrics[i]['err_entropy'] = domino.err_entropy[metrics[i]['pred_slice_idx']]
+    
     return metrics
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description = 'domino evaluation script'
+        description = 'rare SDM evaluation script, mixtures weighted by error.'
     )
     parser.add_argument(
         "--seed",
@@ -139,14 +139,14 @@ if __name__ == '__main__':
 
     sd = dcbench.tasks["slice_discovery"]
     tasks = get_slices(sd.problems, slice_type=args.slice)
-    outpath = f'./results/domino_nopca/{args.slice}/k{args.k}_m{args.m}_lambda_{args.lamda}_{args.seed}.csv'
+    outpath = f'./results/kcenter/{args.slice}/k{args.k}_m{args.m}_lambda_{args.lamda}_{args.seed}.csv'
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
 
     emb_dp = mk.DataPanel.read("./image_embs.mk")
 
     for task in tasks:
         try:
-            result = _run_domino(sd.problems[task], args.k, args.m, args.lamda, emb_dp)
+            result = _run_slicer(sd.problems[task], args.k, args.m, args.lamda, emb_dp)
             result_df = pd.DataFrame(result)
             result_df.to_csv(outpath, mode='a', header=not os.path.exists(outpath))
         except:

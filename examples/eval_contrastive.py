@@ -33,19 +33,6 @@ def _run_domino(problem, n_slices, n_mixtures, lamda, emb_dp):
     val_dp = mk.merge(problem["val_predictions"], problem["base_dataset"], on="id") 
     val_dp["pred"] = val_dp["probs"][:, 1]
     
-    # Embed images
-    # print('Embedding validation images:')
-    # val_dp = embed(
-    #     val_dp, 
-    #     input_col="image",
-    #     device=0
-    # )
-    # print('Embedding test images:')
-    # test_dp = embed(
-    #     test_dp, 
-    #     input_col="image",
-    #     device=0
-    # )
     val_dp = val_dp.merge(emb_dp["id", "clip(image)"], on="id", how="left")
     test_dp = test_dp.merge(emb_dp["id", "clip(image)"], on="id", how="left")
     # Init. Domino
@@ -54,7 +41,7 @@ def _run_domino(problem, n_slices, n_mixtures, lamda, emb_dp):
         'y_hat_log_likelihood_weight':lamda,
         'n_mixture_components':n_mixtures,
         'n_slices': n_slices,
-        'embedder': None
+        'embedder': 'contrastive'
     }
     domino = DominoSlicer(
         **domino_config
@@ -139,7 +126,7 @@ if __name__ == '__main__':
 
     sd = dcbench.tasks["slice_discovery"]
     tasks = get_slices(sd.problems, slice_type=args.slice)
-    outpath = f'./results/domino_nopca/{args.slice}/k{args.k}_m{args.m}_lambda_{args.lamda}_{args.seed}.csv'
+    outpath = f'./results/contrastive_dist/{args.slice}/k{args.k}_m{args.m}_lambda_{args.lamda}_{args.seed}.csv'
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
 
     emb_dp = mk.DataPanel.read("./image_embs.mk")
